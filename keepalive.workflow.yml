@@ -1,0 +1,47 @@
+name: keepalive
+
+# Keeps the Render free-tier web service at https://hellobye.onrender.com warm
+# so visitors never see Render's "service waking up" cold-start page.
+#
+# Render spins a Free web service down after 15 minutes without inbound
+# traffic. Pinging it more often than that keeps it awake and responsive.
+
+on:
+  schedule:
+    - cron: '*/8 * * * *'   # every 8 minutes (well under the 15-minute idle timeout)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (needed for the weekly heartbeat commit)
+        uses: actions/checkout@v4
+
+      - name: Ping hellobye (wake it up + keep it warm)
+        run: |
+          URL="https://hellobye.onrender.com/healthz"
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 "$URL" || true)
+          echo "GET $URL -> ${code:-000}"
+          # A cold start can briefly return 502/503, but the request itself
+          # still resets Render's idle timer, so we never fail the job here.
+
+      - name: Weekly heartbeat commit (prevents 60-day scheduled-workflow disable)
+        run: |
+          if [ "$(date -u +%u)" != "1" ]; then
+            echo "Not Monday (UTC); skipping heartbeat."
+            exit 0
+          fi
+          git config user.name "keepalive-bot"
+          git config user.email "keepalive-bot@users.noreply.github.com"
+          date -u > .keepalive
+          git add .keepalive
+          git commit -m "heartbeat $(date -u +%F)" || { echo "Nothing to commit."; exit 0; }
+          git push
